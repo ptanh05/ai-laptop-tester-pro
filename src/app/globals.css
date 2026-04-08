@@ -1,26 +1,126 @@
 @import "tailwindcss";
 
-:root {
-  --background: #ffffff;
-  --foreground: #171717;
+@theme {
+  /* ── Background ── */
+  --color-bg-primary: #0a0e1a;
+  --color-bg-secondary: #111827;
+  --color-bg-card: #1a2235;
+  --color-bg-card-hover: #1f2a42;
+  --color-border: #2a3654;
+  --color-border-active: #3b82f6;
+
+  /* ── Accent ── */
+  --color-primary: #3b82f6;
+  --color-primary-hover: #2563eb;
+  --color-secondary: #06b6d4;
+  --color-accent: #8b5cf6;
+
+  /* ── Status ── */
+  --color-success: #22c55e;
+  --color-warning: #f59e0b;
+  --color-danger: #ef4444;
+  --color-hot: #f97316;
+
+  /* ── Text ── */
+  --color-text-primary: #f1f5f9;
+  --color-text-secondary: #94a3b8;
+  --color-text-muted: #475569;
+
+  /* ── Font ── */
+  --font-sans: var(--font-inter);
+  --font-mono: ui-monospace, "JetBrains Mono", "Fira Code", monospace;
 }
 
-@theme inline {
-  --color-background: var(--background);
-  --color-foreground: var(--foreground);
-  --font-sans: var(--font-geist-sans);
-  --font-mono: var(--font-geist-mono);
+* {
+  box-sizing: border-box;
 }
 
-@media (prefers-color-scheme: dark) {
-  :root {
-    --background: #0a0a0a;
-    --foreground: #ededed;
+html,
+body {
+  margin: 0;
+  padding: 0;
+  background-color: #0a0e1a;
+  color: #f1f5f9;
+  font-family: var(--font-inter), system-ui, -apple-system, sans-serif;
+  height: 100%;
+  overflow: hidden;
+}
+
+/* ── Scrollbar ── */
+::-webkit-scrollbar {
+  width: 6px;
+  height: 6px;
+}
+::-webkit-scrollbar-track {
+  background: #111827;
+}
+::-webkit-scrollbar-thumb {
+  background: #2a3654;
+  border-radius: 3px;
+}
+::-webkit-scrollbar-thumb:hover {
+  background: #3b82f6;
+}
+
+/* ── Card glow ── */
+.card-glow {
+  box-shadow:
+    0 0 0 1px #2a3654,
+    0 4px 24px rgba(0, 0, 0, 0.5);
+}
+
+.card-glow-blue {
+  box-shadow:
+    0 0 0 1px #3b82f6,
+    0 0 20px rgba(59, 130, 246, 0.15),
+    0 4px 24px rgba(0, 0, 0, 0.5);
+}
+
+/* ── Pulse animation ── */
+@keyframes pulse-glow {
+  0%,
+  100% {
+    box-shadow:
+      0 0 0 1px #3b82f6,
+      0 0 20px rgba(59, 130, 246, 0.15),
+      0 4px 24px rgba(0, 0, 0, 0.5);
+  }
+  50% {
+    box-shadow:
+      0 0 0 2px #3b82f6,
+      0 0 40px rgba(59, 130, 246, 0.3),
+      0 4px 32px rgba(0, 0, 0, 0.5);
   }
 }
 
-body {
-  background: var(--background);
-  color: var(--foreground);
-  font-family: Arial, Helvetica, sans-serif;
+.pulse-active {
+  animation: pulse-glow 2s ease-in-out infinite;
+}
+
+/* ── Gradient text ── */
+.gradient-text {
+  background: linear-gradient(135deg, #3b82f6, #06b6d4, #8b5cf6);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  background-clip: text;
+}
+
+/* ── Temperature gradient ── */
+.temp-bar-safe {
+  background: linear-gradient(90deg, #22c55e, #22c55e);
+}
+.temp-bar-warm {
+  background: linear-gradient(90deg, #22c55e, #f59e0b);
+}
+.temp-bar-hot {
+  background: linear-gradient(90deg, #f59e0b, #f97316);
+}
+.temp-bar-critical {
+  background: linear-gradient(90deg, #f97316, #ef4444);
+}
+
+/* ── Number flip ── */
+.metric-value {
+  font-variant-numeric: tabular-nums;
+  font-family: ui-monospace, "JetBrains Mono", monospace;
 }
