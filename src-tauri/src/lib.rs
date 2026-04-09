@@ -970,6 +970,453 @@ fn get_app_version() -> String {
     env!("CARGO_PKG_VERSION").to_string()
 }
 
+// ═══════════════════════════════════════════════════════════════════════════════
+// HARDWARE FINGERPRINT — Tamper / Swap Detection
+// ═══════════════════════════════════════════════════════════════════════════════
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct RamSlot {
+    pub slot: String,
+    pub manufacturer: String,
+    pub part_number: String,
+    pub capacity_gb: f64,
+    pub speed_mhz: u32,
+    pub serial_number: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct DiskInfo {
+    pub device_id: String,
+    pub model: String,
+    pub serial_number: String,
+    pub size_gb: f64,
+    pub interface_type: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct HardwareFingerprint {
+    pub captured_at: String,
+    pub hostname: String,
+    pub cpu_model: String,
+    pub cpu_cores: usize,
+    pub cpu_max_speed_mhz: u32,
+    pub cpu_processor_id: String,
+    pub cpu_vendor: String,
+    pub ram_total_gb: f64,
+    pub ram_slots: Vec<RamSlot>,
+    pub disks: Vec<DiskInfo>,
+    pub gpu_name: String,
+    pub gpu_vram_gb: f64,
+    pub gpu_driver_version: String,
+    pub battery_model: String,
+    pub battery_serial: String,
+    pub battery_health_pct: f64,
+    pub bios_version: String,
+    pub bios_serial: String,
+    pub motherboard_model: String,
+    pub smbios_uuid: String,
+    pub mac_addresses: Vec<String>,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct ChangeItem {
+    pub category: String,
+    pub field: String,
+    pub old_value: String,
+    pub new_value: String,
+    pub severity: String,
+}
+
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct FingerprintCompare {
+    pub match_pct: f64,
+    pub changes: Vec<ChangeItem>,
+    pub verdict: String,
+}
+
+fn get_hostname() -> String {
+    std::env::var("COMPUTERNAME").unwrap_or_else(|_| "UNKNOWN".to_string())
+}
+
+#[tauri::command]
+fn get_hardware_fingerprint() -> Result<HardwareFingerprint, String> {
+    #[cfg(windows)]
+    {
+        use std::process::Command;
+
+        let timestamp = chrono_lite_now();
+
+        // ── CPU ────────────────────────────────────────────────────────────────
+        let cpu_out = Command::new("powershell")
+            .args(["-NoProfile", "-Command",
+                r#"
+                $c = Get-CimInstance Win32_Processor | Select-Object -First 1
+                Write-Output "$($c.Name)|$($c.NumberOfCores)|$($c.MaxClockSpeed)|$($c.ProcessorId)|$($c.Manufacturer)"
+                "#])
+            .output()
+            .map_err(|e| e.to_string())?;
+
+        let cpu_str = String::from_utf8_lossy(&cpu_out.stdout);
+        let cpu_parts: Vec<&str> = cpu_str.trim().split('|').collect();
+        let cpu_model = cpu_parts.get(0).unwrap_or(&"Unknown").to_string();
+        let cpu_cores: usize = cpu_parts.get(1).and_then(|v| v.trim().parse().ok()).unwrap_or(0);
+        let cpu_max_mhz: u32 = cpu_parts.get(2).and_then(|v| v.trim().parse().ok()).unwrap_or(0);
+        let cpu_proc_id = cpu_parts.get(3).unwrap_or(&"").trim().to_string();
+        let cpu_vendor = cpu_parts.get(4).unwrap_or(&"").trim().to_string();
+
+        // ── RAM slots ─────────────────────────────────────────────────────────
+        let ram_out = Command::new("powershell")
+            .args(["-NoProfile", "-Command",
+                r#"
+                Get-CimInstance Win32_PhysicalMemory | ForEach-Object {
+                    $cap = [Math]::Round($_.Capacity / 1GB, 2)
+                    Write-Output "$($_.BankLabel)|$($_.Manufacturer)|$($_.PartNumber)|$cap|$($_.Speed)|$($_.SerialNumber)"
+                }
+                "#])
+            .output()
+            .map_err(|e| e.to_string())?;
+
+        let ram_total_out = Command::new("powershell")
+            .args(["-NoProfile", "-Command",
+                r#"(Get-CimInstance Win32_ComputerSystem).TotalPhysicalMemory / 1GB"#])
+            .output()
+            .map_err(|e| e.to_string())?;
+        let ram_total: f64 = String::from_utf8_lossy(&ram_total_out.stdout)
+            .trim().parse().unwrap_or(0.0);
+
+        let ram_slots: Vec<RamSlot> = String::from_utf8_lossy(&ram_out.stdout)
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .filter_map(|line| {
+                let parts: Vec<&str> = line.split('|').collect();
+                if parts.len() < 6 { return None; }
+                Some(RamSlot {
+                    slot: parts[0].to_string(),
+                    manufacturer: parts[1].to_string(),
+                    part_number: parts[2].to_string(),
+                    capacity_gb: parts[3].parse().unwrap_or(0.0),
+                    speed_mhz: parts[4].parse().unwrap_or(0),
+                    serial_number: parts[5].to_string(),
+                })
+            })
+            .collect();
+
+        // ── Disks ─────────────────────────────────────────────────────────────
+        let disk_out = Command::new("powershell")
+            .args(["-NoProfile", "-Command",
+                r#"
+                Get-CimInstance Win32_DiskDrive | ForEach-Object {
+                    $size = [Math]::Round($_.Size / 1GB, 0)
+                    Write-Output "$($_.DeviceID)|$($_.Model)|$($_.SerialNumber)|$size|$($_.InterfaceType)"
+                }
+                "#])
+            .output()
+            .map_err(|e| e.to_string())?;
+
+        let disks: Vec<DiskInfo> = String::from_utf8_lossy(&disk_out.stdout)
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .filter_map(|line| {
+                let parts: Vec<&str> = line.split('|').collect();
+                if parts.len() < 5 { return None; }
+                Some(DiskInfo {
+                    device_id: parts[0].to_string(),
+                    model: parts[1].to_string(),
+                    serial_number: parts[2].to_string(),
+                    size_gb: parts[3].parse().unwrap_or(0.0),
+                    interface_type: parts[4].to_string(),
+                })
+            })
+            .collect();
+
+        // ── GPU ───────────────────────────────────────────────────────────────
+        let gpu_out = Command::new("powershell")
+            .args(["-NoProfile", "-Command",
+                r#"
+                $g = Get-CimInstance Win32_VideoController | Select-Object -First 1
+                $vram = [Math]::Round($g.AdapterRAM / 1GB, 2)
+                Write-Output "$($g.Name)|$vram|$($g.DriverVersion)"
+                "#])
+            .output()
+            .map_err(|e| e.to_string())?;
+
+        let gpu_str = String::from_utf8_lossy(&gpu_out.stdout).trim().to_string();
+        let gpu_parts: Vec<&str> = gpu_str.split('|').collect();
+        let gpu_name = gpu_parts.get(0).unwrap_or(&"Unknown").to_string();
+        let gpu_vram: f64 = gpu_parts.get(1).and_then(|v| v.parse().ok()).unwrap_or(0.0);
+        let gpu_driver = gpu_parts.get(2).unwrap_or(&"").to_string();
+
+        // ── Battery ────────────────────────────────────────────────────────────
+        let bat_out = Command::new("powershell")
+            .args(["-NoProfile", "-Command",
+                r#"
+                $b = Get-CimInstance Win32_Battery -ErrorAction SilentlyContinue
+                if ($b) {
+                    $health = $b.FullChargeCapacity / $b.DesignCapacity * 100
+                    Write-Output "$($b.Name)|$($b.DeviceID)|$([Math]::Round($health, 1))"
+                } else {
+                    Write-Output "No Battery|||"
+                }
+                "#])
+            .output()
+            .map_err(|e| e.to_string())?;
+
+        let bat_str = String::from_utf8_lossy(&bat_out.stdout).trim().to_string();
+        let bat_parts: Vec<&str> = bat_str.split('|').collect();
+        let battery_model = bat_parts.get(0).unwrap_or(&"").to_string();
+        let battery_serial = bat_parts.get(1).unwrap_or(&"").trim().to_string();
+        let battery_health: f64 = bat_parts.get(2).and_then(|v| v.parse().ok()).unwrap_or(-1.0);
+
+        // ── BIOS / Motherboard ─────────────────────────────────────────────────
+        let bios_out = Command::new("powershell")
+            .args(["-NoProfile", "-Command",
+                r#"
+                $bios = Get-CimInstance Win32_BIOS
+                $board = Get-CimInstance Win32_BaseBoard
+                $uuid = (Get-CimInstance Win32_ComputerSystemProduct).UUID
+                Write-Output "$($bios.Version)|$($bios.SerialNumber)|$($board.Product)|$uuid"
+                "#])
+            .output()
+            .map_err(|e| e.to_string())?;
+
+        let bios_str = String::from_utf8_lossy(&bios_out.stdout).trim().to_string();
+        let bios_parts: Vec<&str> = bios_str.split('|').collect();
+        let bios_version = bios_parts.get(0).unwrap_or(&"").to_string();
+        let bios_serial = bios_parts.get(1).unwrap_or(&"").trim().to_string();
+        let motherboard = bios_parts.get(2).unwrap_or(&"").to_string();
+        let smbios_uuid = bios_parts.get(3).unwrap_or(&"").trim().to_string();
+
+        // ── MAC Addresses ──────────────────────────────────────────────────────
+        let mac_out = Command::new("powershell")
+            .args(["-NoProfile", "-Command",
+                r#"
+                Get-CimInstance Win32_NetworkAdapter -Filter "PhysicalAdapter=True" |
+                Where-Object { $_.MACAddress -ne $null } |
+                ForEach-Object { Write-Output $_.MACAddress }
+                "#])
+            .output()
+            .map_err(|e| e.to_string())?;
+
+        let mac_addresses: Vec<String> = String::from_utf8_lossy(&mac_out.stdout)
+            .lines()
+            .filter(|l| !l.trim().is_empty())
+            .map(|l| l.trim().to_string())
+            .collect();
+
+        Ok(HardwareFingerprint {
+            captured_at: timestamp,
+            hostname: get_hostname(),
+            cpu_model,
+            cpu_cores,
+            cpu_max_speed_mhz: cpu_max_mhz,
+            cpu_processor_id: cpu_proc_id,
+            cpu_vendor,
+            ram_total_gb: (ram_total * 10.0).round() / 10.0,
+            ram_slots,
+            disks,
+            gpu_name,
+            gpu_vram_gb: (gpu_vram * 10.0).round() / 10.0,
+            gpu_driver_version: gpu_driver,
+            battery_model,
+            battery_serial,
+            battery_health_pct: battery_health,
+            bios_version,
+            bios_serial,
+            motherboard_model: motherboard,
+            smbios_uuid,
+            mac_addresses,
+        })
+    }
+
+    #[cfg(not(windows))]
+    {
+        Err("Hardware fingerprint only supported on Windows".to_string())
+    }
+}
+
+fn chrono_lite_now() -> String {
+    use std::time::{SystemTime, UNIX_EPOCH};
+    let secs = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .unwrap()
+        .as_secs();
+    // Simple UTC ISO format: YYYY-MM-DDTHH:MM:SSZ
+    let days = secs / 86400;
+    let mut remaining = secs % 86400;
+    let hours = remaining / 3600;
+    remaining %= 3600;
+    let minutes = remaining / 60;
+    let seconds = remaining % 60;
+    // Days since 1970-01-01 → add to base date
+    // Simplified: just return epoch timestamp as string
+    format!("{}-{:02}:{:02}:{:02} UTC", 1970 + days / 365, hours, minutes, seconds)
+}
+
+#[tauri::command]
+fn save_fingerprint(path: String) -> Result<String, String> {
+    let fp = get_hardware_fingerprint()?;
+    let json = serde_json::to_string_pretty(&fp)
+        .map_err(|e| format!("JSON error: {}", e))?;
+    std::fs::write(&path, &json)
+        .map_err(|e| format!("Write error: {}", e))?;
+    Ok(format!("Saved: {}", path))
+}
+
+#[tauri::command]
+fn import_fingerprint(path: String) -> Result<HardwareFingerprint, String> {
+    let contents = std::fs::read_to_string(&path)
+        .map_err(|e| format!("Read error: {}", e))?;
+    serde_json::from_str(&contents)
+        .map_err(|e| format!("Parse error: {}: {}", e, &contents[..contents.len().min(200)]))
+}
+
+fn field_match(a: &str, b: &str) -> bool {
+    let a = a.trim().to_lowercase();
+    let b = b.trim().to_lowercase();
+    if a.is_empty() && b.is_empty() { return true; }
+    a == b
+}
+
+#[tauri::command]
+fn compare_fingerprint(
+    baseline: HardwareFingerprint,
+    current: HardwareFingerprint,
+) -> FingerprintCompare {
+    let mut changes: Vec<ChangeItem> = Vec::new();
+    let mut total_checks: usize = 0;
+    let mut matches: usize = 0;
+
+    let check = |changes: &mut Vec<_>, total: &mut usize, matches: &mut usize,
+                 category: &str, field: &str, old_v: &str, new_v: &str, critical: bool| {
+        *total += 1;
+        if field_match(old_v, new_v) {
+            *matches += 1;
+        } else {
+            changes.push(ChangeItem {
+                category: category.to_string(),
+                field: field.to_string(),
+                old_value: old_v.to_string(),
+                new_value: new_v.to_string(),
+                severity: if critical { "CRITICAL".to_string() } else { "WARNING".to_string() },
+            });
+        }
+    };
+
+    // CPU
+    check(&mut changes, &mut total_checks, &mut matches, "CPU", "Model", &baseline.cpu_model, &current.cpu_model, true);
+    check(&mut changes, &mut total_checks, &mut matches, "CPU", "Processor ID", &baseline.cpu_processor_id, &current.cpu_processor_id, false);
+    check(&mut changes, &mut total_checks, &mut matches, "CPU", "Cores", &baseline.cpu_cores.to_string(), &current.cpu_cores.to_string(), false);
+    check(&mut changes, &mut total_checks, &mut matches, "CPU", "Max Speed (MHz)", &baseline.cpu_max_speed_mhz.to_string(), &current.cpu_max_speed_mhz.to_string(), false);
+
+    // RAM total
+    check(&mut changes, &mut total_checks, &mut matches, "RAM", "Total GB", &format!("{:.1}", baseline.ram_total_gb), &format!("{:.1}", current.ram_total_gb), true);
+
+    // RAM slots count
+    let baseline_slots = baseline.ram_slots.len();
+    let current_slots = current.ram_slots.len();
+    if baseline_slots != current_slots {
+        changes.push(ChangeItem {
+            category: "RAM".to_string(),
+            field: "Slot Count".to_string(),
+            old_value: baseline_slots.to_string(),
+            new_value: current_slots.to_string(),
+            severity: "CRITICAL".to_string(),
+        });
+    }
+    total_checks += 1;
+    if baseline_slots == current_slots { matches += 1; }
+
+    // Check each RAM slot
+    for i in 0..baseline_slots.min(current_slots) {
+        let bs = &baseline.ram_slots[i];
+        let cs = &current.ram_slots[i];
+        check(&mut changes, &mut total_checks, &mut matches, "RAM", &format!("Slot {} Manufacturer", bs.slot), &bs.manufacturer, &cs.manufacturer, false);
+        check(&mut changes, &mut total_checks, &mut matches, "RAM", &format!("Slot {} Part Number", bs.slot), &bs.part_number, &cs.part_number, false);
+        check(&mut changes, &mut total_checks, &mut matches, "RAM", &format!("Slot {} Serial", bs.slot), &bs.serial_number, &cs.serial_number, false);
+    }
+
+    // GPU
+    check(&mut changes, &mut total_checks, &mut matches, "GPU", "Model", &baseline.gpu_name, &current.gpu_name, true);
+    check(&mut changes, &mut total_checks, &mut matches, "GPU", "VRAM GB", &format!("{:.1}", baseline.gpu_vram_gb), &format!("{:.1}", current.gpu_vram_gb), false);
+    check(&mut changes, &mut total_checks, &mut matches, "GPU", "Driver", &baseline.gpu_driver_version, &current.gpu_driver_version, false);
+
+    // Storage
+    let baseline_disks = baseline.disks.len();
+    let current_disks = current.disks.len();
+    if baseline_disks != current_disks {
+        changes.push(ChangeItem {
+            category: "Storage".to_string(),
+            field: "Disk Count".to_string(),
+            old_value: baseline_disks.to_string(),
+            new_value: current_disks.to_string(),
+            severity: "CRITICAL".to_string(),
+        });
+    }
+    total_checks += 1;
+    if baseline_disks == current_disks { matches += 1; }
+
+    for i in 0..baseline_disks.min(current_disks) {
+        let bd = &baseline.disks[i];
+        let cd = &current.disks[i];
+        check(&mut changes, &mut total_checks, &mut matches, "Storage", &format!("Disk {} Serial", bd.device_id.replace("\\", "")), &bd.serial_number, &cd.serial_number, true);
+        check(&mut changes, &mut total_checks, &mut matches, "Storage", &format!("Disk {} Size", bd.device_id.replace("\\", "")), &format!("{:.0}GB", bd.size_gb), &format!("{:.0}GB", cd.size_gb), false);
+    }
+
+    // Battery
+    if baseline.battery_serial != "No Battery" && !baseline.battery_serial.is_empty() {
+        check(&mut changes, &mut total_checks, &mut matches, "Battery", "Serial", &baseline.battery_serial, &current.battery_serial, true);
+    }
+    if baseline.battery_health_pct > 0.0 && current.battery_health_pct > 0.0 {
+        let health_drop = baseline.battery_health_pct - current.battery_health_pct;
+        if health_drop > 10.0 {
+            changes.push(ChangeItem {
+                category: "Battery".to_string(),
+                field: "Health Drop".to_string(),
+                old_value: format!("{:.1}%", baseline.battery_health_pct),
+                new_value: format!("{:.1}% (-{:.1}%)", current.battery_health_pct, health_drop),
+                severity: "WARNING".to_string(),
+            });
+        }
+        total_checks += 1;
+        if health_drop <= 10.0 { matches += 1; }
+    }
+
+    // BIOS / Motherboard
+    check(&mut changes, &mut total_checks, &mut matches, "BIOS", "Serial", &baseline.bios_serial, &current.bios_serial, true);
+    check(&mut changes, &mut total_checks, &mut matches, "Motherboard", "Model", &baseline.motherboard_model, &current.motherboard_model, true);
+    check(&mut changes, &mut total_checks, &mut matches, "Motherboard", "SMBIOS UUID", &baseline.smbios_uuid, &current.smbios_uuid, true);
+
+    // Network
+    let baseline_macs: Vec<String> = baseline.mac_addresses.iter().map(|s| s.to_lowercase()).collect();
+    let current_macs: Vec<String> = current.mac_addresses.iter().map(|s| s.to_lowercase()).collect();
+    total_checks += 1;
+    if baseline_macs == current_macs { matches += 1; }
+    else {
+        changes.push(ChangeItem {
+            category: "Network".to_string(),
+            field: "MAC Addresses".to_string(),
+            old_value: if baseline_macs.is_empty() { "N/A".to_string() } else { baseline_macs.join(", ") },
+            new_value: if current_macs.is_empty() { "N/A".to_string() } else { current_macs.join(", ") },
+            severity: "INFO".to_string(),
+        });
+    }
+
+    let match_pct = if total_checks > 0 {
+        (matches as f64 / total_checks as f64 * 100.0 * 10.0).round() / 10.0
+    } else { 100.0 };
+
+    let has_critical = changes.iter().any(|c| c.severity == "CRITICAL");
+    let verdict = if has_critical {
+        "MISMATCH ❌"
+    } else if !changes.is_empty() {
+        "CHANGED ⚠️"
+    } else {
+        "MATCH ✅"
+    };
+
+    FingerprintCompare { match_pct, changes, verdict: verdict.to_string() }
+}
+
 // ── App Entry ────────────────────────────────────────────────────────────────
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
@@ -996,6 +1443,10 @@ pub fn run() {
             get_app_version,
             get_cpu_tier,
             measure_battery_drain,
+            get_hardware_fingerprint,
+            save_fingerprint,
+            import_fingerprint,
+            compare_fingerprint,
         ])
         .setup(|app| {
             if cfg!(debug_assertions) {

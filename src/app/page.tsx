@@ -20,6 +20,7 @@ import {
 import SystemInfoPanel from "@/components/SystemInfoPanel";
 import SettingsPanel from "@/components/SettingsPanel";
 import NetworkSpeedTest from "@/components/NetworkSpeedTest";
+import HardwareFingerprint from "@/components/HardwareFingerprint";
 
 const STORAGE_KEY = "ai-laptop-tester-paths";
 
@@ -265,6 +266,16 @@ export default function Home() {
                 statuses={checklistState}
                 onUpdate={handleChecklistUpdate}
               />
+            </motion.div>
+
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.4, delay: 0.25 }}
+              className="rounded-2xl p-5"
+              style={{ backgroundColor: "#111827", boxShadow: "0 0 0 1px #2a3654, 0 4px 24px rgba(0,0,0,0.4)" }}
+            >
+              <HardwareFingerprint />
             </motion.div>
           </div>
 

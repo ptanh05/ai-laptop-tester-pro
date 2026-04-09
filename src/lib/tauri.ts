@@ -173,3 +173,79 @@ export async function getCpuTier(): Promise<SystemInfo> {
 export async function measureBatteryDrain(seconds: number): Promise<BatteryDrainResult> {
   return invoke<BatteryDrainResult>("measure_battery_drain", { seconds });
 }
+
+// ── Hardware Fingerprint ───────────────────────────────────────────────────────
+
+export interface RamSlot {
+  slot: string;
+  manufacturer: string;
+  part_number: string;
+  capacity_gb: number;
+  speed_mhz: number;
+  serial_number: string;
+}
+
+export interface DiskInfo {
+  device_id: string;
+  model: string;
+  serial_number: string;
+  size_gb: number;
+  interface_type: string;
+}
+
+export interface HardwareFingerprint {
+  captured_at: string;
+  hostname: string;
+  cpu_model: string;
+  cpu_cores: number;
+  cpu_max_speed_mhz: number;
+  cpu_processor_id: string;
+  cpu_vendor: string;
+  ram_total_gb: number;
+  ram_slots: RamSlot[];
+  disks: DiskInfo[];
+  gpu_name: string;
+  gpu_vram_gb: number;
+  gpu_driver_version: string;
+  battery_model: string;
+  battery_serial: string;
+  battery_health_pct: number;
+  bios_version: string;
+  bios_serial: string;
+  motherboard_model: string;
+  smbios_uuid: string;
+  mac_addresses: string[];
+}
+
+export interface ChangeItem {
+  category: string;
+  field: string;
+  old_value: string;
+  new_value: string;
+  severity: string;
+}
+
+export interface FingerprintCompare {
+  match_pct: number;
+  changes: ChangeItem[];
+  verdict: string;
+}
+
+export async function getHardwareFingerprint(): Promise<HardwareFingerprint> {
+  return invoke<HardwareFingerprint>("get_hardware_fingerprint");
+}
+
+export async function saveFingerprint(path: string): Promise<string> {
+  return invoke<string>("save_fingerprint", { path });
+}
+
+export async function importFingerprint(path: string): Promise<HardwareFingerprint> {
+  return invoke<HardwareFingerprint>("import_fingerprint", { path });
+}
+
+export async function compareFingerprint(
+  baseline: HardwareFingerprint,
+  current: HardwareFingerprint,
+): Promise<FingerprintCompare> {
+  return invoke<FingerprintCompare>("compare_fingerprint", { baseline, current });
+}
