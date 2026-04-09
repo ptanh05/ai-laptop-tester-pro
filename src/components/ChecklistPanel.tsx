@@ -1,8 +1,8 @@
 "use client";
 
-import { useState } from "react";
+import { useState, useEffect } from "react";
 import { motion } from "framer-motion";
-import { CheckCircle2, Circle, AlertTriangle, Cpu, Monitor, MemoryStick, HardDrive, Activity } from "lucide-react";
+import { CheckCircle2, AlertTriangle, Cpu, Monitor, MemoryStick, HardDrive, Activity } from "lucide-react";
 
 interface ChecklistItem {
   id: string;
@@ -52,10 +52,27 @@ const DEFAULT_CHECKLIST: ChecklistItem[] = [
 
 interface Props {
   onItemComplete: (id: string, pass: boolean) => void;
+  statuses?: Record<string, "pending" | "pass" | "fail">;
+  onUpdate?: (id: string, status: "pending" | "pass" | "fail") => void;
 }
 
-export default function ChecklistPanel({ onItemComplete }: Props) {
-  const [items, setItems] = useState<ChecklistItem[]>(DEFAULT_CHECKLIST);
+export default function ChecklistPanel({ onItemComplete, statuses = {}, onUpdate }: Props) {
+  const [items, setItems] = useState<ChecklistItem[]>(
+    DEFAULT_CHECKLIST.map((item) => ({
+      ...item,
+      status: statuses[item.id] ?? "pending",
+    }))
+  );
+
+  // Sync external status changes (e.g. from auto test)
+  useEffect(() => {
+    setItems((prev) =>
+      prev.map((item) => {
+        const ext = statuses[item.id];
+        return ext !== undefined && ext !== item.status ? { ...item, status: ext } : item;
+      })
+    );
+  }, [statuses]);
 
   const handleToggle = (id: string, currentStatus: ChecklistItem["status"]) => {
     const nextStatus: ChecklistItem["status"] =
@@ -72,6 +89,7 @@ export default function ChecklistPanel({ onItemComplete }: Props) {
     if (nextStatus !== "pending") {
       onItemComplete(id, nextStatus === "pass");
     }
+    onUpdate?.(id, nextStatus);
   };
 
   const completedCount = items.filter((i) => i.status !== "pending").length;

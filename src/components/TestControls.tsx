@@ -29,6 +29,7 @@ interface Tool {
 interface Props {
   onToolComplete: (toolId: string, passed: boolean) => void;
   isAutoRunning: boolean;
+  toolPaths?: Record<string, string>;
 }
 
 const TOOLS: Tool[] = [
@@ -89,7 +90,7 @@ function StatusDot({ status }: { status: TestStatus }) {
   );
 }
 
-export default function TestControls({ onToolComplete, isAutoRunning }: Props) {
+export default function TestControls({ onToolComplete, isAutoRunning, toolPaths }: Props) {
   const [tools, setTools] = useState<(Tool & { status: TestStatus })[]>(
     TOOLS.map((t) => ({ ...t, status: "idle" })),
   );
@@ -104,7 +105,7 @@ export default function TestControls({ onToolComplete, isAutoRunning }: Props) {
     setSelectedTool(tool.id);
 
     try {
-      await runTool(tool.id);
+      await runTool(tool.id, toolPaths);
       setTools((prev) =>
         prev.map((t) =>
           t.id === tool.id ? { ...t, status: "running" as TestStatus } : t,

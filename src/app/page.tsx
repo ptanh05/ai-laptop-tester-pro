@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback } from "react";
+import { useState, useCallback, useEffect } from "react";
 import { motion } from "framer-motion";
 import { Laptop, Activity, ChevronRight } from "lucide-react";
 import TestControls from "@/components/TestControls";
@@ -8,7 +8,28 @@ import LiveMonitoring from "@/components/LiveMonitoring";
 import AIEvaluationPanel from "@/components/AIEvaluationPanel";
 import ChecklistPanel from "@/components/ChecklistPanel";
 import AutoTestController from "@/components/AutoTestController";
-import { exportResultTxt, exportResultJson, type TestResult } from "@/lib/tauri";
+import {
+  exportResultTxt,
+  exportResultJson,
+  getSystemInfo,
+  type TestResult,
+  type SystemMetrics,
+  type CpuTier,
+  TOOL_PATHS,
+} from "@/lib/tauri";
+import SystemInfoPanel from "@/components/SystemInfoPanel";
+import SettingsPanel from "@/components/SettingsPanel";
+import NetworkSpeedTest from "@/components/NetworkSpeedTest";
+
+const STORAGE_KEY = "ai-laptop-tester-paths";
+
+function loadToolPaths(): Record<string, string> {
+  try {
+    const raw = localStorage.getItem(STORAGE_KEY);
+    if (raw) return JSON.parse(raw);
+  } catch {}
+  return { ...TOOL_PATHS };
+}
 
 export default function Home() {
   const [isTestRunning, setIsTestRunning] = useState(false);
@@ -18,62 +39,120 @@ export default function Home() {
   const [durationSec, setDurationSec] = useState(0);
   const [testResult, setTestResult] = useState<TestResult | null>(null);
   const [isEvaluated, setIsEvaluated] = useState(false);
+  const [toolPaths, setToolPaths] = useState<Record<string, string>>(loadToolPaths);
+  const [checklistState, setChecklistState] = useState<Record<string, "pending" | "pass" | "fail">>({
+    cpu: "pending",
+    gpu: "pending",
+    ram: "pending",
+    ssd: "pending",
+    thermal: "pending",
+  });
   const [toast, setToast] = useState<{ msg: string; type: "success" | "error" } | null>(null);
+
+  // ── Tier-aware scoring state ──────────────────────────────────────────────
+  const [cpuTier, setCpuTier] = useState<CpuTier>("lowmid");
+  const [batteryHealth, setBatteryHealth] = useState(-1);
+  const [drainRate, setDrainRate] = useState(0);
+  const [networkDown, setNetworkDown] = useState(0);
+  const [networkUp, setNetworkUp] = useState(0);
+  const [networkLatency, setNetworkLatency] = useState(0);
+
+  // Load system info on mount
+  useEffect(() => {
+    getSystemInfo()
+      .then((info) => {
+        setCpuTier((info.cpu_tier as CpuTier) || "lowmid");
+        setBatteryHealth(info.battery.health_pct ?? -1);
+      })
+      .catch(() => {
+        // fallback silently
+      });
+  }, []);
 
   const showToast = (msg: string, type: "success" | "error" = "success") => {
     setToast({ msg, type });
     setTimeout(() => setToast(null), 3500);
   };
 
-  const handleAutoComplete = useCallback((result: TestResult) => {
-    setTestResult(result);
-    setIsEvaluated(true);
-    setIsTestRunning(false);
-    showToast("Auto test complete! Run AI evaluation.", "success");
+  const handleSettingsSave = useCallback((paths: Record<string, string>) => {
+    setToolPaths(paths);
+    showToast("Tool paths updated!", "success");
   }, []);
 
-  const handleMetricsUpdate = useCallback(
-    (cpu: number, gpu: number, avgCpu: number) => {
-      setCpuMax(cpu);
-      setGpuMax(gpu);
-      setAvgCpuUsage(avgCpu);
-    },
-    [],
-  );
-
-  const handleExportTxt = async () => {
-    if (!testResult) {
-      showToast("No result to export", "error");
-      return;
+  const handleToolComplete = useCallback((toolId: string, passed: boolean) => {
+    const idMap: Record<string, keyof typeof checklistState> = {
+      Cinebench: "cpu",
+      FurMark: "gpu",
+      MemTest64: "ram",
+      CrystalDiskMark: "ssd",
+    };
+    const checkId = idMap[toolId];
+    if (checkId) {
+      setChecklistState((prev) => ({ ...prev, [checkId]: passed ? "pass" : "fail" }));
     }
+  }, []);
+
+  const handleChecklistUpdate = useCallback((id: string, status: "pending" | "pass" | "fail") => {
+    setChecklistState((prev) => ({ ...prev, [id]: status }));
+  }, []);
+
+  const handleAutoComplete = useCallback(async (result: TestResult, elapsed: number) => {
+    setTestResult(result);
+    setDurationSec(elapsed);
+    setIsEvaluated(true);
+    setIsTestRunning(false);
+    setChecklistState((prev) => ({
+      ...prev,
+      thermal: result.metrics.cpu_temp > 95 || result.metrics.gpu_temp > 85 ? "fail" : "pass",
+    }));
+    showToast(`Auto test done! Score: ${result.score}/100 — ${result.verdict}`, "success");
+
+    const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+    const dir = `C:\\Users\\anh01\\Documents\\AI-Laptop-Tester\\result-${timestamp}`;
+    try {
+      await exportResultTxt(`${dir}.txt`, result);
+      await exportResultJson(`${dir}.json`, result);
+      showToast("Results auto-exported to Documents/AI-Laptop-Tester/", "success");
+    } catch (e) {
+      // silent fail
+    }
+  }, []);
+
+  const handleNetworkResult = useCallback((down: number, up: number, latency: number) => {
+    setNetworkDown(down);
+    setNetworkUp(up);
+    setNetworkLatency(latency);
+  }, []);
+
+  const handleExportTxt = useCallback(async () => {
+    const result = testResult;
+    if (!result) { showToast("No result to export", "error"); return; }
     try {
       const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
       await exportResultTxt(
         `C:\\Users\\anh01\\Documents\\AI-Laptop-Tester\\result-${timestamp}.txt`,
-        testResult,
+        result,
       );
-      showToast("Exported to result.txt", "success");
-    } catch {
-      showToast("Export failed", "error");
+      showToast("Exported to Documents/AI-Laptop-Tester/", "success");
+    } catch (e) {
+      showToast(`Export failed: ${e}`, "error");
     }
-  };
+  }, [testResult]);
 
-  const handleExportJson = async () => {
-    if (!testResult) {
-      showToast("No result to export", "error");
-      return;
-    }
+  const handleExportJson = useCallback(async () => {
+    const result = testResult;
+    if (!result) { showToast("No result to export", "error"); return; }
     try {
       const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
       await exportResultJson(
         `C:\\Users\\anh01\\Documents\\AI-Laptop-Tester\\result-${timestamp}.json`,
-        testResult,
+        result,
       );
-      showToast("Exported to result.json", "success");
-    } catch {
-      showToast("Export failed", "error");
+      showToast("Exported to Documents/AI-Laptop-Tester/", "success");
+    } catch (e) {
+      showToast(`Export failed: ${e}`, "error");
     }
-  };
+  }, [testResult]);
 
   return (
     <div className="h-full flex flex-col" style={{ backgroundColor: "#0a0e1a" }}>
@@ -97,11 +176,10 @@ export default function Home() {
               AI Laptop Tester Pro
             </h1>
             <p className="text-xs text-[#475569] mt-0.5">
-              Hardware Testing Suite v0.1.0
+              Hardware Testing Suite — Tier-Aware Scoring v2
             </p>
           </div>
         </div>
-
         <div className="flex items-center gap-4">
           <div className="flex items-center gap-2">
             <div
@@ -121,7 +199,6 @@ export default function Home() {
 
           {/* Left Column */}
           <div className="col-span-12 lg:col-span-4 flex flex-col gap-5">
-            {/* Test Controls */}
             <motion.div
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
@@ -129,10 +206,33 @@ export default function Home() {
               className="rounded-2xl p-5"
               style={{ backgroundColor: "#111827", boxShadow: "0 0 0 1px #2a3654, 0 4px 24px rgba(0,0,0,0.4)" }}
             >
-              <TestControls onToolComplete={() => {}} isAutoRunning={isTestRunning} />
+              <SystemInfoPanel />
             </motion.div>
 
-            {/* Auto Test */}
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.4 }}
+              className="rounded-2xl p-5"
+              style={{ backgroundColor: "#111827", boxShadow: "0 0 0 1px #2a3654, 0 4px 24px rgba(0,0,0,0.4)" }}
+            >
+              <TestControls
+                onToolComplete={handleToolComplete}
+                isAutoRunning={isTestRunning}
+                toolPaths={toolPaths}
+              />
+            </motion.div>
+
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.4 }}
+              className="rounded-2xl p-5"
+              style={{ backgroundColor: "#111827", boxShadow: "0 0 0 1px #2a3654, 0 4px 24px rgba(0,0,0,0.4)" }}
+            >
+              <SettingsPanel onSave={handleSettingsSave} />
+            </motion.div>
+
             <motion.div
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
@@ -142,11 +242,17 @@ export default function Home() {
             >
               <AutoTestController
                 onComplete={handleAutoComplete}
-                onMetricsUpdate={handleMetricsUpdate}
+                onRunningChange={setIsTestRunning}
+                toolPaths={toolPaths}
+                cpuTier={cpuTier}
+                batteryHealth={batteryHealth}
+                drainRate={drainRate}
+                networkDown={networkDown}
+                networkUp={networkUp}
+                networkLatency={networkLatency}
               />
             </motion.div>
 
-            {/* Checklist */}
             <motion.div
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
@@ -154,13 +260,16 @@ export default function Home() {
               className="rounded-2xl p-5 flex-1"
               style={{ backgroundColor: "#111827", boxShadow: "0 0 0 1px #2a3654, 0 4px 24px rgba(0,0,0,0.4)" }}
             >
-              <ChecklistPanel onItemComplete={() => {}} />
+              <ChecklistPanel
+                onItemComplete={() => {}}
+                statuses={checklistState}
+                onUpdate={handleChecklistUpdate}
+              />
             </motion.div>
           </div>
 
           {/* Right Column */}
           <div className="col-span-12 lg:col-span-8 flex flex-col gap-5">
-            {/* Live Monitoring */}
             <motion.div
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
@@ -174,10 +283,22 @@ export default function Home() {
                   setCpuMax((prev) => Math.max(prev, cpu));
                   setGpuMax((prev) => Math.max(prev, gpu));
                 }}
+                onMetricsUpdate={(m: SystemMetrics) => {
+                  setAvgCpuUsage(m.cpu_usage);
+                }}
               />
             </motion.div>
 
-            {/* AI Evaluation */}
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.4, delay: 0.1 }}
+              className="rounded-2xl p-5"
+              style={{ backgroundColor: "#111827", boxShadow: "0 0 0 1px #2a3654, 0 4px 24px rgba(0,0,0,0.4)" }}
+            >
+              <NetworkSpeedTest onResult={handleNetworkResult} />
+            </motion.div>
+
             <motion.div
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
@@ -190,13 +311,38 @@ export default function Home() {
                 gpuMax={gpuMax}
                 avgCpuUsage={avgCpuUsage}
                 durationSec={durationSec}
-                ramPass={true}
+                ramPass={checklistState.ram !== "fail"}
                 ssdSeqRead={0}
                 ssdSeqWrite={0}
                 benchmarkScore={0}
+                cpuTier={cpuTier}
+                batteryHealth={batteryHealth}
+                drainRate={drainRate}
+                networkDown={networkDown}
+                networkUp={networkUp}
+                networkLatency={networkLatency}
                 onExportTxt={handleExportTxt}
                 onExportJson={handleExportJson}
                 isEvaluated={isEvaluated}
+                storedResult={testResult}
+                onEvaluate={(result: ReturnType<typeof import("@/lib/ai-scoring").evaluateScore>) => {
+                  setTestResult({
+                    score: result.score,
+                    verdict: result.verdict,
+                    recommendation: result.recommendation,
+                    explanations: result.explanations.map(e => e.text),
+                    metrics: {
+                      cpu_temp: cpuMax,
+                      gpu_temp: gpuMax,
+                      ram_usage: 0,
+                      cpu_usage: avgCpuUsage,
+                      ram_total_gb: 0,
+                      ram_used_gb: 0,
+                      is_mock: false,
+                    },
+                    duration_sec: durationSec,
+                  });
+                }}
               />
             </motion.div>
           </div>

@@ -2,37 +2,66 @@
 
 import { useState, useEffect, useRef, useCallback } from "react";
 import { motion } from "framer-motion";
-import { Play, Square, Clock, Zap } from "lucide-react";
-import { runTool, getSystemMetrics, logEvent, aiEvaluate, writeLogFile, type SystemMetrics, type TestResult } from "@/lib/tauri";
-import { getTempColor, type ScoringInput } from "@/lib/ai-scoring";
+import { Play, Square, Clock, Zap, Pause } from "lucide-react";
+import {
+  runTool,
+  getSystemMetrics,
+  logEvent,
+  aiEvaluate,
+  writeLogFile,
+  clearLogs,
+  measureBatteryDrain,
+  getSystemInfo,
+  type TestResult,
+} from "@/lib/tauri";
+import { getTempColor } from "@/lib/ai-scoring";
 
 const TEST_DURATION_SEC = 900; // 15 minutes
 const POLL_INTERVAL_MS = 2000;
 
 interface Props {
-  onComplete: (result: TestResult) => void;
-  onMetricsUpdate: (cpuMax: number, gpuMax: number, avgCpu: number) => void;
+  onComplete: (result: TestResult, elapsed: number) => void;
+  onRunningChange: (running: boolean) => void;
+  toolPaths?: Record<string, string>;
+  cpuTier?: string;
+  batteryHealth?: number;
+  drainRate?: number;
+  networkDown?: number;
+  networkUp?: number;
+  networkLatency?: number;
 }
 
-export default function AutoTestController({ onComplete, onMetricsUpdate }: Props) {
+export default function AutoTestController({
+  onComplete,
+  onRunningChange,
+  toolPaths,
+  cpuTier = "lowmid",
+  batteryHealth = -1,
+  drainRate = 0,
+  networkDown = 0,
+  networkUp = 0,
+  networkLatency = 0,
+}: Props) {
   const [isRunning, setIsRunning] = useState(false);
+  const [isPaused, setIsPaused] = useState(false);
   const [elapsedSec, setElapsedSec] = useState(0);
-  const [cpuMax, setCpuMax] = useState(0);
-  const [gpuMax, setGpuMax] = useState(0);
-  const [avgCpuUsage, setAvgCpuUsage] = useState(0);
-  const [logs, setLogs] = useState<SystemMetrics[]>([]);
   const [isComplete, setIsComplete] = useState(false);
   const [saving, setSaving] = useState(false);
 
-  const startTimeRef = useRef<number | null>(null);
-  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
-  const metricsRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  // Use refs to avoid stale closures
+  const cpuMaxRef = useRef(0);
+  const gpuMaxRef = useRef(0);
   const cpuSumRef = useRef(0);
   const sampleCountRef = useRef(0);
+  const logsRef = useRef<Awaited<ReturnType<typeof getSystemMetrics>>[]>([]);
+  const startTimeRef = useRef(0);
+  const timerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pausedTimerRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const pollRef = useRef<ReturnType<typeof setInterval> | null>(null);
+  const finishTestRef = useRef<(() => Promise<void>) | null>(null);
 
   const remainingSec = Math.max(0, TEST_DURATION_SEC - elapsedSec);
   const progress = (elapsedSec / TEST_DURATION_SEC) * 100;
-  const progressColor = isRunning ? "#3b82f6" : "#475569";
 
   const formatTime = (sec: number) => {
     const m = Math.floor(sec / 60);
@@ -40,124 +69,190 @@ export default function AutoTestController({ onComplete, onMetricsUpdate }: Prop
     return `${m}:${s.toString().padStart(2, "0")}`;
   };
 
-  const saveLogs = useCallback(async () => {
-    if (logs.length === 0) return;
-    setSaving(true);
-    try {
-      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-      await writeLogFile(
-        `C:\\Users\\anh01\\Documents\\AI-Laptop-Tester\\test-${timestamp}.json`,
-        logs.map((m, i) => ({
-          timestamp: Date.now() - (logs.length - i) * POLL_INTERVAL_MS,
-          cpu_temp: m.cpu_temp,
-          gpu_temp: m.gpu_temp,
-          ram_usage: m.ram_usage,
-          event: "auto_test_sample",
-        })),
-      );
-    } catch {
-      // ignore
-    }
-    setSaving(false);
-  }, [logs]);
-
+  // eslint-disable-next-line react-hooks/exhaustive-deps
   const finishTest = useCallback(async () => {
     if (timerRef.current) clearInterval(timerRef.current);
-    if (metricsRef.current) clearInterval(metricsRef.current);
+    if (pollRef.current) clearInterval(pollRef.current);
+    timerRef.current = null;
+    pollRef.current = null;
+
     setIsRunning(false);
     setIsComplete(true);
-    await saveLogs();
+    onRunningChange(false);
 
+    const elapsed = elapsedSec; // capture from state at call time
     const avgCpu = sampleCountRef.current > 0 ? cpuSumRef.current / sampleCountRef.current : 0;
-    onMetricsUpdate(cpuMax, gpuMax, avgCpu);
 
+    // Save logs
+    if (logsRef.current.length > 0) {
+      setSaving(true);
+      try {
+        const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+        await writeLogFile(
+          `C:\\Users\\anh01\\Documents\\AI-Laptop-Tester\\test-${timestamp}.json`,
+          logsRef.current.map((m, i) => ({
+            timestamp: Date.now() - (logsRef.current.length - i) * POLL_INTERVAL_MS,
+            cpu_temp: m.cpu_temp,
+            gpu_temp: m.gpu_temp,
+            ram_usage: m.ram_usage,
+            event: "auto_test_sample",
+          })),
+        );
+      } catch { /* ignore */ }
+      setSaving(false);
+    }
+
+    // Evaluate
     try {
       const result = await aiEvaluate(
-        cpuMax,
-        gpuMax,
-        0, // benchmark
-        0, // ssd read
-        0, // ssd write
-        true, // ram pass
+        cpuMaxRef.current,
+        gpuMaxRef.current,
+        0,         // benchmarkScore (no auto benchmark)
+        0,         // ssdSeqRead
+        0,         // ssdSeqWrite
+        true,      // ramPass — from checklist (passed through props if available)
         avgCpu,
-        elapsedSec,
+        elapsed,
+        cpuTier as "entry" | "lowmid" | "mid" | "high" | "enthusiast",
+        batteryHealth,
+        drainRate,
+        networkDown,
+        networkUp,
+        networkLatency,
       );
-      onComplete(result);
+      onComplete(result, elapsed);
     } catch {
       onComplete({
-        score: 0,
-        verdict: "AVOID ❌",
-        recommendation: "AVOID",
-        explanations: ["Evaluation failed"],
-        metrics: { cpu_temp: cpuMax, gpu_temp: gpuMax, ram_usage: 0, cpu_usage: avgCpu, ram_total_gb: 0, ram_used_gb: 0 },
-        duration_sec: elapsedSec,
-      });
+        score: 0, verdict: "AVOID ❌", recommendation: "AVOID",
+        explanations: ["Evaluation failed — check tool paths"],
+        metrics: { cpu_temp: cpuMaxRef.current, gpu_temp: gpuMaxRef.current, ram_usage: 0, cpu_usage: avgCpu, ram_total_gb: 0, ram_used_gb: 0, is_mock: false },
+        duration_sec: elapsed,
+      }, elapsed);
     }
-  }, [cpuMax, gpuMax, elapsedSec, logs, onComplete, onMetricsUpdate, saveLogs]);
+  // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [onComplete, onRunningChange]);
+
+  // Keep finishTestRef updated for timer callback
+  useEffect(() => {
+    finishTestRef.current = finishTest;
+  }, [finishTest]);
 
   const startTest = async () => {
-    setIsRunning(true);
-    setElapsedSec(0);
-    setCpuMax(0);
-    setGpuMax(0);
-    setAvgCpuUsage(0);
-    setLogs([]);
-    setIsComplete(false);
-    startTimeRef.current = Date.now();
+    // Reset all
+    cpuMaxRef.current = 0;
+    gpuMaxRef.current = 0;
     cpuSumRef.current = 0;
     sampleCountRef.current = 0;
+    logsRef.current = [];
+    startTimeRef.current = Date.now();
+    setElapsedSec(0);
+    setIsComplete(false);
+    setSaving(false);
 
     try {
+      await clearLogs();
       await logEvent("AUTO_TEST_START");
-      // Launch all tools
-      await Promise.allSettled([
-        runTool("Cinebench"),
-        runTool("FurMark"),
-        runTool("MemTest64"),
-        runTool("CrystalDiskMark"),
-      ]);
-    } catch {
-      // tools may not be installed — continue with monitoring
-    }
+    } catch { /* ignore */ }
 
-    // Elapsed timer
+    // Launch all tools (non-blocking)
+    Promise.allSettled([
+      runTool("Cinebench", toolPaths),
+      runTool("FurMark", toolPaths),
+      runTool("MemTest64", toolPaths),
+      runTool("CrystalDiskMark", toolPaths),
+    ]);
+
+    setIsRunning(true);
+    onRunningChange(true);
+
+    // Timer
     timerRef.current = setInterval(() => {
       setElapsedSec((prev) => {
         const next = prev + 1;
-        if (next >= TEST_DURATION_SEC) {
-          finishTest();
+        if (next >= TEST_DURATION_SEC && finishTestRef.current) {
+          finishTestRef.current();
         }
         return next;
       });
     }, 1000);
 
     // Metrics polling
-    metricsRef.current = setInterval(async () => {
+    pollRef.current = setInterval(async () => {
       try {
         const m = await getSystemMetrics();
-        setLogs((prev) => [...prev, m]);
+        logsRef.current.push(m);
         cpuSumRef.current += m.cpu_usage;
         sampleCountRef.current += 1;
-
-        setCpuMax((prev) => Math.max(prev, m.cpu_temp));
-        setGpuMax((prev) => Math.max(prev, m.gpu_temp));
-      } catch {
-        // ignore
-      }
+        cpuMaxRef.current = Math.max(cpuMaxRef.current, m.cpu_temp);
+        gpuMaxRef.current = Math.max(gpuMaxRef.current, m.gpu_temp);
+      } catch { /* ignore */ }
     }, POLL_INTERVAL_MS);
   };
 
-  const cancelTest = () => {
-    if (timerRef.current) clearInterval(timerRef.current);
-    if (metricsRef.current) clearInterval(metricsRef.current);
+  const togglePause = () => {
+    if (!isRunning) return;
+    if (!isPaused) {
+      // Pause: stop timers but keep data
+      if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
+      if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
+      setIsPaused(true);
+    } else {
+      // Resume: restart timers
+      timerRef.current = setInterval(() => {
+        setElapsedSec((prev) => {
+          const next = prev + 1;
+          if (next >= TEST_DURATION_SEC && finishTestRef.current) {
+            finishTestRef.current();
+          }
+          return next;
+        });
+      }, 1000);
+      pollRef.current = setInterval(async () => {
+        try {
+          const m = await getSystemMetrics();
+          logsRef.current.push(m);
+          cpuSumRef.current += m.cpu_usage;
+          sampleCountRef.current += 1;
+          cpuMaxRef.current = Math.max(cpuMaxRef.current, m.cpu_temp);
+          gpuMaxRef.current = Math.max(gpuMaxRef.current, m.gpu_temp);
+        } catch { /* ignore */ }
+      }, POLL_INTERVAL_MS);
+      setIsPaused(false);
+    }
+  };
+
+  const cancelTest = async () => {
+    if (timerRef.current) { clearInterval(timerRef.current); timerRef.current = null; }
+    if (pollRef.current) { clearInterval(pollRef.current); pollRef.current = null; }
     setIsRunning(false);
+    setIsPaused(false);
     setElapsedSec(0);
+    onRunningChange(false);
+
+    // Save partial logs
+    if (logsRef.current.length > 0) {
+      setSaving(true);
+      try {
+        const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
+        await writeLogFile(
+          `C:\\Users\\anh01\\Documents\\AI-Laptop-Tester\\test-${timestamp}.json`,
+          logsRef.current.map((m, i) => ({
+            timestamp: Date.now() - (logsRef.current.length - i) * POLL_INTERVAL_MS,
+            cpu_temp: m.cpu_temp,
+            gpu_temp: m.gpu_temp,
+            ram_usage: m.ram_usage,
+            event: "auto_test_cancelled",
+          })),
+        );
+      } catch { /* ignore */ }
+      setSaving(false);
+    }
   };
 
   useEffect(() => {
     return () => {
       if (timerRef.current) clearInterval(timerRef.current);
-      if (metricsRef.current) clearInterval(metricsRef.current);
+      if (pollRef.current) clearInterval(pollRef.current);
     };
   }, []);
 
@@ -173,7 +268,7 @@ export default function AutoTestController({ onComplete, onMetricsUpdate }: Prop
         </span>
       </div>
 
-      {/* Timer display */}
+      {/* Timer */}
       <div className="rounded-xl p-4 text-center" style={{ backgroundColor: "#1a2235", boxShadow: "0 0 0 1px #2a3654" }}>
         <div className="flex items-center justify-center gap-2 mb-1">
           <Clock size={18} className={isRunning ? "text-[#f59e0b] animate-pulse" : "text-[#475569]"} />
@@ -182,7 +277,7 @@ export default function AutoTestController({ onComplete, onMetricsUpdate }: Prop
           </span>
         </div>
         <span className="text-xs text-[#94a3b8]">
-          {isRunning ? "Test in progress..." : isComplete ? "Test Complete" : "Ready to start"}
+          {isPaused ? "Paused" : isRunning ? "Test in progress..." : isComplete ? "Test Complete ✓" : "Ready to start"}
         </span>
 
         {/* Progress bar */}
@@ -200,15 +295,15 @@ export default function AutoTestController({ onComplete, onMetricsUpdate }: Prop
         </div>
       </div>
 
-      {/* Current max temps */}
+      {/* Max temps */}
       {isRunning && (
         <div className="grid grid-cols-2 gap-2">
-          <TempBadge label="CPU MAX" value={cpuMax} />
-          <TempBadge label="GPU MAX" value={gpuMax} />
+          <TempBadge label="CPU MAX" value={cpuMaxRef.current} />
+          <TempBadge label="GPU MAX" value={gpuMaxRef.current} />
         </div>
       )}
 
-      {/* Control Buttons */}
+      {/* Control */}
       <div className="flex gap-2">
         {!isRunning ? (
           <motion.button
@@ -226,24 +321,43 @@ export default function AutoTestController({ onComplete, onMetricsUpdate }: Prop
             Start Full Test
           </motion.button>
         ) : (
-          <motion.button
-            onClick={cancelTest}
-            whileHover={{ scale: 1.01 }}
-            whileTap={{ scale: 0.99 }}
-            className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl font-semibold text-sm transition-all"
-            style={{
-              background: "#1a2235",
-              color: "#ef4444",
-              boxShadow: "0 0 0 1px #ef444460",
-            }}
-          >
-            <Square size={16} />
-            Cancel Test
-          </motion.button>
+          <>
+            <motion.button
+              onClick={togglePause}
+              whileHover={{ scale: 1.01 }}
+              whileTap={{ scale: 0.99 }}
+              className="flex-1 flex items-center justify-center gap-2 py-3 rounded-xl font-semibold text-sm transition-all"
+              style={{
+                background: isPaused
+                  ? "linear-gradient(135deg, #f97316, #ef4444)"
+                  : "#1a2235",
+                color: isPaused ? "#fff" : "#f59e0b",
+                boxShadow: isPaused
+                  ? "0 0 20px rgba(249,115,22,0.3)"
+                  : "0 0 0 1px #f59e0b40",
+              }}
+            >
+              {isPaused ? <Play size={16} /> : <Pause size={16} />}
+              {isPaused ? "Resume" : "Pause"}
+            </motion.button>
+            <motion.button
+              onClick={cancelTest}
+              whileHover={{ scale: 1.01 }}
+              whileTap={{ scale: 0.99 }}
+              className="flex items-center justify-center gap-2 px-4 py-3 rounded-xl font-semibold text-sm transition-all"
+              style={{
+                background: "#1a2235",
+                color: "#ef4444",
+                boxShadow: "0 0 0 1px #ef444460",
+              }}
+            >
+              <Square size={16} />
+              Stop
+            </motion.button>
+          </>
         )}
       </div>
 
-      {/* Saving indicator */}
       {saving && (
         <div className="text-xs text-[#94a3b8] text-center animate-pulse">
           Saving logs...
@@ -256,10 +370,8 @@ export default function AutoTestController({ onComplete, onMetricsUpdate }: Prop
 function TempBadge({ label, value }: { label: string; value: number }) {
   const color = getTempColor(value);
   return (
-    <div
-      className="flex items-center justify-between px-3 py-2 rounded-lg"
-      style={{ backgroundColor: "#111827", boxShadow: "0 0 0 1px #2a3654" }}
-    >
+    <div className="flex items-center justify-between px-3 py-2 rounded-lg"
+      style={{ backgroundColor: "#111827", boxShadow: "0 0 0 1px #2a3654" }}>
       <span className="text-xs text-[#94a3b8]">{label}</span>
       <span className="text-sm font-bold metric-value" style={{ color }}>
         {value > 0 ? `${value.toFixed(1)}°C` : "--"}

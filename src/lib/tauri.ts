@@ -2,6 +2,10 @@
 
 import { invoke } from "@tauri-apps/api/core";
 
+// ── Types ────────────────────────────────────────────────────────────────────
+
+export type CpuTier = "entry" | "lowmid" | "mid" | "high" | "enthusiast";
+
 export interface SystemMetrics {
   cpu_temp: number;
   gpu_temp: number;
@@ -9,6 +13,7 @@ export interface SystemMetrics {
   cpu_usage: number;
   ram_total_gb: number;
   ram_used_gb: number;
+  is_mock: boolean;
 }
 
 export interface TestLogEntry {
@@ -28,6 +33,36 @@ export interface TestResult {
   duration_sec: number;
 }
 
+export interface BatteryInfo {
+  charge_pct: number;
+  is_charging: boolean;
+  health_pct: number;    // 0–100, -1 = unknown
+  design_cap_mwh: number;
+  full_cap_mwh: number;
+}
+
+export interface SystemInfo {
+  cpu_model: string;
+  cpu_cores: number;
+  ram_total_gb: number;
+  gpu_model: string;
+  gpu_vram_gb: number;
+  os_version: string;
+  battery: BatteryInfo;
+  cpu_tier: CpuTier;
+  cpu_tier_label: string;
+  benchmark_max: number;
+}
+
+export interface BatteryDrainResult {
+  drain_rate: number;     // %/min
+  start_charge: number;  // %
+  end_charge: number;    // %
+  is_discharging: boolean;
+  is_charging: boolean;
+}
+
+// ── Tool Paths — EDIT THESE to match your system ──────────────────────────────
 export const TOOL_PATHS: Record<string, string> = {
   Cinebench: "C:\\Toolkit\\Cinebench\\Cinebench.exe",
   FurMark: "C:\\Toolkit\\GPU\\FurMark\\furmark.exe",
@@ -35,24 +70,15 @@ export const TOOL_PATHS: Record<string, string> = {
   CrystalDiskMark: "C:\\Toolkit\\DiskMark\\DiskMark64.exe",
 };
 
+// ── Commands ─────────────────────────────────────────────────────────────────
+
 export async function getSystemMetrics(): Promise<SystemMetrics> {
-  try {
-    return await invoke<SystemMetrics>("get_system_metrics");
-  } catch {
-    // Fallback mock in dev mode
-    return {
-      cpu_temp: 45 + Math.random() * 30,
-      gpu_temp: 50 + Math.random() * 25,
-      ram_usage: 30 + Math.random() * 40,
-      cpu_usage: 10 + Math.random() * 50,
-      ram_total_gb: 16,
-      ram_used_gb: 8,
-    };
-  }
+  return invoke<SystemMetrics>("get_system_metrics");
 }
 
-export async function runTool(toolName: string): Promise<string> {
-  const path = TOOL_PATHS[toolName];
+export async function runTool(toolName: string, paths?: Record<string, string>): Promise<string> {
+  const toolPaths = paths ?? TOOL_PATHS;
+  const path = toolPaths[toolName];
   if (!path) throw new Error(`Unknown tool: ${toolName}`);
   return invoke<string>("run_program", { path });
 }
@@ -86,6 +112,12 @@ export async function aiEvaluate(
   ramPass: boolean,
   cpuUsage: number,
   durationSec: number,
+  cpuTier: CpuTier,
+  batteryHealth: number,
+  drainRate: number,
+  networkDown: number,
+  networkUp: number,
+  networkLatency: number,
 ): Promise<TestResult> {
   return invoke<TestResult>("ai_evaluate", {
     cpuMaxTemp,
@@ -96,6 +128,12 @@ export async function aiEvaluate(
     ramPass,
     cpuUsage,
     durationSec,
+    cpuTier,
+    batteryHealth,
+    drainRate,
+    networkDown,
+    networkUp,
+    networkLatency,
   });
 }
 
@@ -120,6 +158,18 @@ export async function writeLogFile(
   return invoke<string>("write_log_file", { path, logs });
 }
 
+export async function getSystemInfo(): Promise<SystemInfo> {
+  return invoke<SystemInfo>("get_system_info");
+}
+
 export async function getAppVersion(): Promise<string> {
   return invoke<string>("get_app_version");
+}
+
+export async function getCpuTier(): Promise<SystemInfo> {
+  return invoke<SystemInfo>("get_cpu_tier");
+}
+
+export async function measureBatteryDrain(seconds: number): Promise<BatteryDrainResult> {
+  return invoke<BatteryDrainResult>("measure_battery_drain", { seconds });
 }
