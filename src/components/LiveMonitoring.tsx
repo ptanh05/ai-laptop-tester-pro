@@ -22,6 +22,7 @@ import {
 } from "recharts";
 import { getSystemMetrics, type SystemMetrics } from "@/lib/tauri";
 import { getTempColor, getTempLabel } from "@/lib/ai-scoring";
+import { sendThermalAlert, loadNotificationSettings } from "./NotificationPanel";
 
 interface MetricHistory {
   cpuTemp: number[];
@@ -140,6 +141,7 @@ export default function LiveMonitoring({ isTestRunning, onMaxUpdate, onMetricsUp
   const [history, setHistory] = useState<MetricHistory>({ cpuTemp: [], gpuTemp: [], ramUsage: [] });
   const [isMock, setIsMock] = useState(false);
   const [pollCount, setPollCount] = useState(0);
+  const [lastAlertTime, setLastAlertTime] = useState(0);
 
   // Use refs for max tracking to avoid stale closures
   const cpuMaxRef = useRef(0);
@@ -164,6 +166,18 @@ export default function LiveMonitoring({ isTestRunning, onMaxUpdate, onMetricsUp
         onMaxUpdate(newCpuMax, newGpuMax);
       }
 
+      // Check thermal alert (throttle to once per minute)
+      const now = Date.now();
+      if (now - lastAlertTime > 60000) {
+        const settings = loadNotificationSettings();
+        if (settings.enabled && settings.thermalAlert) {
+          if (m.cpu_temp >= settings.temperatureThreshold || m.gpu_temp >= settings.temperatureThreshold) {
+            sendThermalAlert(m.cpu_temp, m.gpu_temp);
+            setLastAlertTime(now);
+          }
+        }
+      }
+
       setHistory((h) => ({
         cpuTemp: [...h.cpuTemp.slice(-59), m.cpu_temp],
         gpuTemp: [...h.gpuTemp.slice(-59), m.gpu_temp],
@@ -172,7 +186,7 @@ export default function LiveMonitoring({ isTestRunning, onMaxUpdate, onMetricsUp
     } catch {
       // ignore
     }
-  }, [onMaxUpdate, onMetricsUpdate]);
+  }, [onMaxUpdate, onMetricsUpdate, lastAlertTime]);
 
   useEffect(() => {
     // Poll immediately on mount, then every 2 seconds

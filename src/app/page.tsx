@@ -19,8 +19,19 @@ import {
 } from "@/lib/tauri";
 import SystemInfoPanel from "@/components/SystemInfoPanel";
 import SettingsPanel from "@/components/SettingsPanel";
+import UserPreferencesPanel from "@/components/UserPreferencesPanel";
 import NetworkSpeedTest from "@/components/NetworkSpeedTest";
 import HardwareFingerprint from "@/components/HardwareFingerprint";
+import TestHistoryPanel from "@/components/TestHistoryPanel";
+import TestComparisonPanel from "@/components/TestComparisonPanel";
+import HistoryChartsPanel from "@/components/HistoryChartsPanel";
+import NotificationPanel, {
+  sendTestCompleteNotification,
+  sendThermalAlert,
+} from "@/components/NotificationPanel";
+import BenchmarkImportPanel from "@/components/BenchmarkImportPanel";
+import { saveTestToHistory } from "@/lib/test-history";
+import { generatePDFReport } from "@/lib/pdf-export";
 
 const STORAGE_KEY = "ai-laptop-tester-paths";
 
@@ -57,6 +68,12 @@ export default function Home() {
   const [networkDown, setNetworkDown] = useState(0);
   const [networkUp, setNetworkUp] = useState(0);
   const [networkLatency, setNetworkLatency] = useState(0);
+  const [systemInfo, setSystemInfo] = useState<{ cpu: string; gpu: string; ram: string } | null>(null);
+
+  // ── Benchmark scores ──────────────────────────────────────────────────────
+  const [benchmarkScore, setBenchmarkScore] = useState(0);
+  const [ssdSeqRead, setSsdSeqRead] = useState(0);
+  const [ssdSeqWrite, setSsdSeqWrite] = useState(0);
 
   // Load system info on mount
   useEffect(() => {
@@ -64,6 +81,11 @@ export default function Home() {
       .then((info) => {
         setCpuTier((info.cpu_tier as CpuTier) || "lowmid");
         setBatteryHealth(info.battery.health_pct ?? -1);
+        setSystemInfo({
+          cpu: info.cpu_model,
+          gpu: info.gpu_model,
+          ram: `${info.ram_total_gb.toFixed(1)} GB`,
+        });
       })
       .catch(() => {
         // fallback silently
@@ -108,6 +130,14 @@ export default function Home() {
     }));
     showToast(`Auto test done! Score: ${result.score}/100 — ${result.verdict}`, "success");
 
+    // Send notification
+    sendTestCompleteNotification(result.score, result.verdict);
+
+    // Save to history
+    if (systemInfo) {
+      saveTestToHistory(result, systemInfo);
+    }
+
     const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
     const dir = `C:\\Users\\anh01\\Documents\\AI-Laptop-Tester\\result-${timestamp}`;
     try {
@@ -117,12 +147,28 @@ export default function Home() {
     } catch (e) {
       // silent fail
     }
-  }, []);
+  }, [systemInfo]);
 
   const handleNetworkResult = useCallback((down: number, up: number, latency: number) => {
     setNetworkDown(down);
     setNetworkUp(up);
     setNetworkLatency(latency);
+  }, []);
+
+  const handleBenchmarkResult = useCallback((
+    cinebenchScore: number,
+    diskRead: number,
+    diskWrite: number
+  ) => {
+    if (cinebenchScore > 0) {
+      setBenchmarkScore(cinebenchScore);
+      showToast(`Cinebench score imported: ${cinebenchScore}`, "success");
+    }
+    if (diskRead > 0 || diskWrite > 0) {
+      setSsdSeqRead(diskRead);
+      setSsdSeqWrite(diskWrite);
+      showToast(`Disk speeds imported: ${diskRead.toFixed(0)}/${diskWrite.toFixed(0)} MB/s`, "success");
+    }
   }, []);
 
   const handleExportTxt = useCallback(async () => {
@@ -154,6 +200,20 @@ export default function Home() {
       showToast(`Export failed: ${e}`, "error");
     }
   }, [testResult]);
+
+  const handleExportPdf = useCallback(() => {
+    const result = testResult;
+    if (!result || !systemInfo) {
+      showToast("No result to export", "error");
+      return;
+    }
+    try {
+      generatePDFReport(result, systemInfo);
+      showToast("PDF report opened in new window", "success");
+    } catch (e) {
+      showToast(`PDF export failed: ${e}`, "error");
+    }
+  }, [testResult, systemInfo]);
 
   return (
     <div className="h-full flex flex-col" style={{ backgroundColor: "#0a0e1a" }}>
@@ -237,6 +297,16 @@ export default function Home() {
             <motion.div
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.4, delay: 0.05 }}
+              className="rounded-2xl p-5"
+              style={{ backgroundColor: "#111827", boxShadow: "0 0 0 1px #2a3654, 0 4px 24px rgba(0,0,0,0.4)" }}
+            >
+              <UserPreferencesPanel />
+            </motion.div>
+
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.4, delay: 0.1 }}
               className="rounded-2xl p-5"
               style={{ backgroundColor: "#111827", boxShadow: "0 0 0 1px #2a3654, 0 4px 24px rgba(0,0,0,0.4)" }}
@@ -277,6 +347,16 @@ export default function Home() {
             >
               <HardwareFingerprint />
             </motion.div>
+
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.4, delay: 0.3 }}
+              className="rounded-2xl p-5"
+              style={{ backgroundColor: "#111827", boxShadow: "0 0 0 1px #2a3654, 0 4px 24px rgba(0,0,0,0.4)" }}
+            >
+              <NotificationPanel />
+            </motion.div>
           </div>
 
           {/* Right Column */}
@@ -313,6 +393,16 @@ export default function Home() {
             <motion.div
               initial={{ opacity: 0, y: 20 }}
               animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.4, delay: 0.12 }}
+              className="rounded-2xl p-5"
+              style={{ backgroundColor: "#111827", boxShadow: "0 0 0 1px #2a3654, 0 4px 24px rgba(0,0,0,0.4)" }}
+            >
+              <BenchmarkImportPanel onResult={handleBenchmarkResult} />
+            </motion.div>
+
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
               transition={{ duration: 0.4, delay: 0.15 }}
               className="rounded-2xl p-5"
               style={{ backgroundColor: "#111827", boxShadow: "0 0 0 1px #2a3654, 0 4px 24px rgba(0,0,0,0.4)" }}
@@ -323,9 +413,9 @@ export default function Home() {
                 avgCpuUsage={avgCpuUsage}
                 durationSec={durationSec}
                 ramPass={checklistState.ram !== "fail"}
-                ssdSeqRead={0}
-                ssdSeqWrite={0}
-                benchmarkScore={0}
+                ssdSeqRead={ssdSeqRead}
+                ssdSeqWrite={ssdSeqWrite}
+                benchmarkScore={benchmarkScore}
                 cpuTier={cpuTier}
                 batteryHealth={batteryHealth}
                 drainRate={drainRate}
@@ -334,10 +424,11 @@ export default function Home() {
                 networkLatency={networkLatency}
                 onExportTxt={handleExportTxt}
                 onExportJson={handleExportJson}
+                onExportPdf={handleExportPdf}
                 isEvaluated={isEvaluated}
                 storedResult={testResult}
                 onEvaluate={(result: ReturnType<typeof import("@/lib/ai-scoring").evaluateScore>) => {
-                  setTestResult({
+                  const newResult = {
                     score: result.score,
                     verdict: result.verdict,
                     recommendation: result.recommendation,
@@ -352,9 +443,45 @@ export default function Home() {
                       is_mock: false,
                     },
                     duration_sec: durationSec,
-                  });
+                  };
+                  setTestResult(newResult);
+
+                  // Save to history
+                  if (systemInfo) {
+                    saveTestToHistory(newResult, systemInfo);
+                  }
                 }}
               />
+            </motion.div>
+
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.4, delay: 0.2 }}
+              className="rounded-2xl p-5"
+              style={{ backgroundColor: "#111827", boxShadow: "0 0 0 1px #2a3654, 0 4px 24px rgba(0,0,0,0.4)" }}
+            >
+              <TestHistoryPanel />
+            </motion.div>
+
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.4, delay: 0.25 }}
+              className="rounded-2xl p-5"
+              style={{ backgroundColor: "#111827", boxShadow: "0 0 0 1px #2a3654, 0 4px 24px rgba(0,0,0,0.4)" }}
+            >
+              <TestComparisonPanel />
+            </motion.div>
+
+            <motion.div
+              initial={{ opacity: 0, y: 20 }}
+              animate={{ opacity: 1, y: 0 }}
+              transition={{ duration: 0.4, delay: 0.3 }}
+              className="rounded-2xl p-5"
+              style={{ backgroundColor: "#111827", boxShadow: "0 0 0 1px #2a3654, 0 4px 24px rgba(0,0,0,0.4)" }}
+            >
+              <HistoryChartsPanel />
             </motion.div>
           </div>
         </div>

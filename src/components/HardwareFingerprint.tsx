@@ -2,18 +2,15 @@
 
 import { useState, useRef } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Scan, FileUp, FileDown, AlertTriangle, CheckCircle, XCircle, Info, Wifi, HardDrive, Cpu, MemoryStick, Battery, Monitor, Hash } from "lucide-react";
+import { Scan, FileUp, AlertTriangle, CheckCircle, XCircle, Info, Wifi, HardDrive, Cpu, MemoryStick, Battery, Monitor, Hash } from "lucide-react";
 import {
   getHardwareFingerprint,
-  saveFingerprint,
   importFingerprint,
   compareFingerprint,
   type HardwareFingerprint,
   type FingerprintCompare,
   type ChangeItem,
 } from "@/lib/tauri";
-
-const APPDATA_PATH = `C:\\Users\\anh01\\AppData\\Roaming\\ai-laptop-tester\\hardware-baseline.json`;
 
 type PanelState = "idle" | "capturing" | "comparing" | "importing" | "result";
 
@@ -30,9 +27,9 @@ export default function HardwareFingerprint() {
     setPanelState("capturing");
     try {
       const fp = await getHardwareFingerprint();
-      await saveFingerprint(APPDATA_PATH);
       setBaseline(fp);
       setCurrent(fp);
+      setCompareResult(null);
       setPanelState("result");
     } catch (e: unknown) {
       setError(`Capture failed: ${e}`);
@@ -82,18 +79,6 @@ export default function HardwareFingerprint() {
     if (fileInputRef.current) fileInputRef.current.value = "";
   };
 
-  const handleExport = async () => {
-    if (!current) return;
-    try {
-      const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-      const path = `C:\\Users\\anh01\\Documents\\AI-Laptop-Tester\\fingerprint-${timestamp}.json`;
-      await saveFingerprint(path);
-      alert(`Exported to:\n${path}`);
-    } catch (e: unknown) {
-      setError(`Export failed: ${e}`);
-    }
-  };
-
   const hasBaseline = baseline !== null;
 
   return (
@@ -125,7 +110,7 @@ export default function HardwareFingerprint() {
         {hasBaseline ? (
           <>
             <CheckCircle size={12} className="text-[#22c55e]" />
-            <span className="text-[#94a3b8]">Baseline saved:</span>
+            <span className="text-[#94a3b8]">Baseline loaded:</span>
             <span className="text-[#f1f5f9] font-medium">{baseline?.hostname}</span>
             <span className="text-[#475569] ml-auto">{baseline?.captured_at}</span>
           </>
@@ -161,13 +146,6 @@ export default function HardwareFingerprint() {
           color="#8b5cf6"
           onClick={handleImport}
           disabled={panelState === "capturing" || panelState === "comparing"}
-        />
-        <ActionButton
-          icon={<FileDown size={14} />}
-          label="Export Current"
-          color="#22c55e"
-          onClick={handleExport}
-          disabled={!current}
         />
       </div>
 

@@ -235,9 +235,6 @@ export async function getHardwareFingerprint(): Promise<HardwareFingerprint> {
   return invoke<HardwareFingerprint>("get_hardware_fingerprint");
 }
 
-export async function saveFingerprint(path: string): Promise<string> {
-  return invoke<string>("save_fingerprint", { path });
-}
 
 export async function importFingerprint(path: string): Promise<HardwareFingerprint> {
   return invoke<HardwareFingerprint>("import_fingerprint", { path });

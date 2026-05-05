@@ -124,3 +124,19 @@ body {
   font-variant-numeric: tabular-nums;
   font-family: ui-monospace, "JetBrains Mono", monospace;
 }
+
+/* ── Custom scrollbar for history panel ── */
+.custom-scrollbar::-webkit-scrollbar {
+  width: 8px;
+}
+.custom-scrollbar::-webkit-scrollbar-track {
+  background: #0a0e1a;
+  border-radius: 4px;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb {
+  background: #2a3654;
+  border-radius: 4px;
+}
+.custom-scrollbar::-webkit-scrollbar-thumb:hover {
+  background: #3b82f6;
+}

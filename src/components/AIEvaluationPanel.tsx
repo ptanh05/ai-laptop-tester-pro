@@ -2,7 +2,7 @@
 
 import { useState, useEffect } from "react";
 import { motion, AnimatePresence } from "framer-motion";
-import { Brain, CheckCircle, XCircle, AlertTriangle, Info, Download, Zap, Battery, Wifi } from "lucide-react";
+import { Brain, CheckCircle, XCircle, AlertTriangle, Info, Download, Zap, Battery, Wifi, FileText } from "lucide-react";
 import {
   evaluateScore,
   getScoreColor,
@@ -14,6 +14,7 @@ import {
   type CpuTier,
 } from "@/lib/ai-scoring";
 import { type TestResult } from "@/lib/tauri";
+import { generatePDFReport } from "@/lib/pdf-export";
 
 interface Props {
   cpuMax: number;
@@ -32,6 +33,7 @@ interface Props {
   networkLatency: number;
   onExportTxt: () => void;
   onExportJson: () => void;
+  onExportPdf?: (result: TestResult, systemInfo: { cpu: string; gpu: string; ram: string }) => void;
   isEvaluated: boolean;
   storedResult: TestResult | null;
   onEvaluate: (result: ReturnType<typeof evaluateScore>) => void;
@@ -430,26 +432,36 @@ export default function AIEvaluationPanel({
             </div>
 
             {/* Export Buttons */}
-            <div className="flex gap-2 mt-3">
+            <div className="grid grid-cols-3 gap-2 mt-3">
               <motion.button
                 onClick={onExportTxt}
                 whileHover={{ scale: 1.01 }}
                 whileTap={{ scale: 0.99 }}
-                className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-medium transition-all"
+                className="flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-medium transition-all"
                 style={{ backgroundColor: "#1a2235", color: "#94a3b8", boxShadow: "0 0 0 1px #2a3654" }}
               >
                 <Download size={14} />
-                Export TXT
+                TXT
               </motion.button>
               <motion.button
                 onClick={onExportJson}
                 whileHover={{ scale: 1.01 }}
                 whileTap={{ scale: 0.99 }}
-                className="flex-1 flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-medium transition-all"
+                className="flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-medium transition-all"
                 style={{ backgroundColor: "#1a2235", color: "#94a3b8", boxShadow: "0 0 0 1px #2a3654" }}
               >
                 <Download size={14} />
-                Export JSON
+                JSON
+              </motion.button>
+              <motion.button
+                onClick={onExportPdf}
+                whileHover={{ scale: 1.01 }}
+                whileTap={{ scale: 0.99 }}
+                className="flex items-center justify-center gap-2 py-2.5 rounded-xl text-sm font-medium transition-all"
+                style={{ backgroundColor: "#1a2235", color: "#ef4444", boxShadow: "0 0 0 1px #2a3654" }}
+              >
+                <FileText size={14} />
+                PDF
               </motion.button>
             </div>
           </motion.div>
